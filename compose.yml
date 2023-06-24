@@ -1,0 +1,97 @@
+services:
+  minio:
+    container_name: minio
+    image: minio/minio
+    command: server --console-address ":9001" /data
+    ports:
+      - 9000:9000
+      - 9001:9001
+    volumes:
+      - ./minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    networks:
+      - grade-prediction
+
+  miniomc:
+    container_name: miniomc
+    image: minio/mc
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set minio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb minio/models;
+      /usr/bin/mc policy set public minio/models;
+      exit 0; "
+    networks:
+      - grade-prediction
+    depends_on:
+      - minio
+
+  mysql:
+    container_name: mysql
+    image: mysql:8
+    command: mysqld --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - 3306:3306
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+      - ./mysql_init_scripts/dataset_procedure.sql:/docker-entrypoint-initdb.d/1.sql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: grade_prediction
+    networks:
+      - grade-prediction
+    healthcheck:
+      test: mysqladmin ping -h 127.0.0.1 -u root --password=$$MYSQL_ROOT_PASSWORD
+
+  grade-prediction-prediction-backend:
+    container_name: grade-prediction-prediction-backend
+    image: grade-prediction-prediction-backend
+    ports:
+      - 8000:8000
+    environment:
+      DB.URL: mysql+pymysql://root:root@mysql:3306/grade_prediction
+      MINIO.HOST: minio:9000
+      MINIO.ACCESS-KEY: minioadmin
+      MINIO.SECRET-KEY: minioadmin
+    networks:
+      - grade-prediction
+    depends_on:
+      minio:
+        condition: service_started
+      miniomc:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+
+  grade-prediction-main-backend:
+    container_name: grade-prediction-main-backend
+    image: grade-prediction-main-backend
+    ports:
+      - 8080:8080
+    environment:
+      DB.URL: jdbc:mysql://root:root@mysql:3306/grade_prediction
+      JWT.SECRET-KEY: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
+      PREDICTION-BACKEND.URL: http://grade-prediction-prediction-backend:8000
+    networks:
+      - grade-prediction
+    depends_on:
+      - grade-prediction-prediction-backend
+
+  grade-prediction-web:
+    container_name: grade-prediction-web
+    image: grade-prediction-web
+    ports:
+      - 5173:5173
+    environment:
+      MAIN-BACKEND.URL: http://grade-prediction-main-backend:8080
+    networks:
+      - grade-prediction
+    depends_on:
+      - grade-prediction-main-backend
+
+networks:
+  grade-prediction:
+    name: grade-prediction
+    driver: bridge
